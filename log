@@ -1,0 +1,90 @@
+#!/usr/bin/python3
+import sys
+import socket
+import hashlib
+
+def double_sha256_hex(s: str) -> str:
+    """
+    1. Compute hash1 = SHA-256(s) as raw bytes
+    2. Compute hash2 = SHA-256(hash1) as hex string
+    3. Return the hex string (hash2_hex)
+    """
+    hash1 = hashlib.sha256(s.encode('utf-8')).digest()   # raw bytes
+    hash2_hex = hashlib.sha256(hash1).hexdigest()        # hex string
+    return hash2_hex
+
+def meets_difficulty(hash_hex: str, bits: int = 22) -> bool:
+    """
+    Check if the first `bits` bits of hash_hex are zero.
+    i.e., interpret hash_hex as an integer and verify it's < 2^(256 - bits).
+    """
+    hash_int = int(hash_hex, 16)
+    return hash_int < (1 << (256 - bits))
+
+def find_nonce(cleaned_message: str, bits: int = 22) -> str:
+    """
+    Brute-force a nonce so that double_sha256_hex(nonce + ":" + cleaned_message)
+    has at least `bits` leading zero bits in its binary form.
+    """
+    i = 0
+    while True:
+        nonce = str(i)
+        candidate = nonce + ":" + cleaned_message
+        # Double-hash the candidate
+        hash_hex = double_sha256_hex(candidate)
+        if meets_difficulty(hash_hex, bits):
+            return nonce
+        i += 1
+
+def send_string_to_server(port: int, message: str):
+    """
+    Connect to localhost:port, send `message`, read server response, print it.
+    """
+    try:
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_socket.connect(('localhost', port))
+
+        # Make file-like objects for reading/writing text
+        with client_socket.makefile('r') as server_in, client_socket.makefile('w') as server_out:
+            # Send the message with a newline
+            server_out.write(message + "\n")
+            server_out.flush()
+
+            # Receive and print the response
+            response = server_in.readline().strip()
+            print(f"Server response: {response}")
+
+    except Exception as e:
+        print(f"Error communicating with server: {e}")
+    finally:
+        client_socket.close()
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: log <port> <message>")
+        sys.exit(1)
+
+    port = int(sys.argv[1])
+    original_message = sys.argv[2]
+
+    # 1. Replace newlines/tabs with spaces
+    cleaned_message = ""
+    for ch in original_message:
+        if ch in ['\n', '\t']:
+            cleaned_message += ' '
+        else:
+            cleaned_message += ch
+
+    # 2. Ensure message is >= 64 bytes
+    if len(cleaned_message) < 64:
+        print("Error: Message must be at least 64 bytes.")
+        sys.exit(1)
+
+    # 3. Find nonce with double-hash PoW for 22 leading zero bits
+    nonce = find_nonce(cleaned_message, bits=22)
+
+    # 4. Final message is nonce + ":" + cleaned_message
+    final_message = nonce + ":" + cleaned_message
+
+    # 5. Send to server
+    send_string_to_server(port, final_message)

@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+import sys
+import os
+import hashlib
+import base64
+
+def compute_head_of_line(line: str) -> str:
+    """
+    Compute base64(SHA-256(line)) and return the last 24 chars.
+    """
+    raw_hash = hashlib.sha256(line.encode('utf-8')).digest()
+    b64 = base64.b64encode(raw_hash).decode('utf-8')
+    return b64[-24:]
+
+def main():
+    if len(sys.argv) != 1:
+        print("failed: no arguments allowed")
+        sys.exit(1)
+
+    log_file = "log.txt"
+    head_file = "loghead.txt"
+
+    # 1. Check if files exist
+    if not os.path.exists(log_file):
+        print("failed: log.txt missing")
+        sys.exit(1)
+    if not os.path.exists(head_file):
+        print("failed: loghead.txt missing")
+        sys.exit(1)
+
+    # 2. Read log.txt lines
+    with open(log_file, "r") as lf:
+        lines = lf.readlines()
+
+    # 3. Read final head pointer
+    with open(head_file, "r") as hf:
+        stored_head = hf.read().strip()
+
+    if len(lines) == 0:
+        # empty log
+        if stored_head == "start":
+            print("Validx!")
+            sys.exit(0)
+        else:
+            print("failed: empty log but head pointer is not 'start'")
+            sys.exit(1)
+
+    # For each line in log.txt, parse "<timestamp> - <prev_hash> <message>"
+    for i in range(len(lines)):
+        line_i = lines[i].rstrip('\n')
+
+        # Split once on " - "
+        parts = line_i.split(" - ", 1)
+        if len(parts) != 2:
+            print(f"failed: malformed line {i+1}")
+            sys.exit(1)
+
+        timestamp_part = parts[0]
+        rest = parts[1]  # "<prev_hash> <message>"
+
+        # Split once on space to get <prev_hash> and <message>
+        space_idx = rest.find(" ")
+        if space_idx < 0:
+            print(f"failed: malformed line {i+1}")
+            sys.exit(1)
+
+        prev_hash_in_line = rest[:space_idx]
+        actual_message = rest[space_idx+1:]
+
+        # If it's the first line, prev_hash_in_line should be "start"
+        if i == 0 and prev_hash_in_line != "start":
+            print(f"failed: first line's prev_hash should be 'start', got '{prev_hash_in_line}'")
+            sys.exit(1)
+
+        # Compute the base64 last-24-chars hash of this line
+        line_i_head = compute_head_of_line(line_i)
+
+        # Compare with next line's prev_hash or the stored_head
+        if i < len(lines) - 1:
+            # Look at the next line's prev_hash
+            next_line = lines[i+1].rstrip('\n')
+            parts2 = next_line.split(" - ", 1)
+            if len(parts2) != 2:
+                print(f"failed: malformed line {i+2}")
+                sys.exit(1)
+            rest2 = parts2[1]
+            space_idx2 = rest2.find(" ")
+            if space_idx2 < 0:
+                print(f"failed: malformed line {i+2}")
+                sys.exit(1)
+            next_line_prev_hash = rest2[:space_idx2]
+
+            if next_line_prev_hash != line_i_head:
+                print(f"failed: mismatch at line {i+1}")
+                sys.exit(1)
+        else:
+            # Last line, compare to stored_head
+            if line_i_head != stored_head:
+                print(f"failed: mismatch at last line")
+                sys.exit(1)
+
+    print("Validx!")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,140 @@
+#!/usr/bin/python3
+import socket
+import sys
+import hashlib
+import base64
+import os
+import datetime
+
+def double_hash_has_22_zero_bits(data: str) -> bool:
+    """
+    1. Compute hash1 = SHA-256(data)  (raw bytes)
+    2. Compute hash2 = SHA-256(hash1) (hex digest)
+    3. Check if hash2 has at least 22 leading zero bits.
+    """
+    hash1 = hashlib.sha256(data.encode('utf-8')).digest()
+    hash2_hex = hashlib.sha256(hash1).hexdigest()
+    hash_int = int(hash2_hex, 16)
+    return hash_int < (1 << (256 - 22))
+
+def handle_client(client_socket):
+    try:
+        with client_socket.makefile('r') as client_in, client_socket.makefile('w') as client_out:
+            message = client_in.readline().strip()
+            print(f"Received: {message}")
+
+            if ':' not in message:
+                response = "Error: missing colon in message\n"
+            else:
+                # Validate the double-hash proof-of-work
+                if double_hash_has_22_zero_bits(message):
+                    # Strip the nonce
+                    parts = message.split(':', 1)
+                    nonce = parts[0]
+                    actual_msg = parts[1]
+
+                    # Append the new blockchain entry
+                    response = append_blockchain_entry(actual_msg)
+                else:
+                    response = "Error: invalid proof-of-work\n"
+
+            # Send response
+            client_out.write(response)
+            client_out.flush()
+
+    except Exception as e:
+        print(f"logserver error: {e}")
+    finally:
+        client_socket.close()
+
+def append_blockchain_entry(actual_msg: str) -> str:
+    """
+    1. If log.txt doesn't exist, create it and set loghead.txt to "start".
+    2. If log.txt exists but loghead.txt doesn't, reconstruct the head pointer
+       from the last line in log.txt.
+    3. Read current head pointer from loghead.txt (or "start" if empty).
+    4. Build new line: "<timestamp> - <prev_hash> <actual_msg>"
+    5. Compute SHA-256 of that line, base64-encode it, take the last 24 chars as new head pointer.
+    6. Append the line to log.txt.
+    7. Overwrite loghead.txt with the new head pointer.
+    8. Return "ok\n" if successful, or an error message.
+    """
+    log_file_path = "log.txt"
+    head_file_path = "loghead.txt"
+
+    log_exists = os.path.exists(log_file_path)
+    head_exists = os.path.exists(head_file_path)
+
+    # 1. If there's no log.txt, it's brand new
+    if not log_exists:
+        # Create loghead.txt with "start"
+        with open(head_file_path, "w") as f:
+            f.write("start\n")
+    else:
+        # 2. log.txt exists but loghead.txt doesn't -> reconstruct from last line
+        if not head_exists:
+            try:
+                # Read all lines
+                with open(log_file_path, "r") as lf:
+                    lines = lf.read().strip().split('\n')
+                if len(lines) == 0:
+                    # If log.txt is empty, just write "start"
+                    with open(head_file_path, "w") as f:
+                        f.write("start\n")
+                else:
+                    # Take the last line, compute its hash, store in loghead.txt
+                    last_line = lines[-1]
+                    new_head = compute_head_of_line(last_line)
+                    with open(head_file_path, "w") as f:
+                        f.write(new_head + "\n")
+            except Exception as e:
+                return f"Error: cannot reconstruct loghead.txt ({e})\n"
+
+    # 3. Read current head pointer
+    with open(head_file_path, "r") as f:
+        prev_hash = f.read().strip()
+        if not prev_hash:
+            prev_hash = "start"
+
+    # 4. Build the new line
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_line = f"{timestamp} - {prev_hash} {actual_msg}"
+
+    # 5. Compute new head pointer
+    new_head = compute_head_of_line(new_line)
+
+    # 6. Append line to log.txt
+    with open(log_file_path, "a") as f:
+        f.write(new_line + "\n")
+
+    # 7. Overwrite loghead.txt
+    with open(head_file_path, "w") as f:
+        f.write(new_head + "\n")
+
+    # 8. Return success
+    return "ok\n"
+
+def compute_head_of_line(line: str) -> str:
+    """
+    Helper: compute base64(SHA-256(line)) and return the last 24 chars.
+    """
+    raw_hash = hashlib.sha256(line.encode('utf-8')).digest()
+    b64 = base64.b64encode(raw_hash).decode('utf-8')
+    return b64[-24:]
+
+def start_server():
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind(('0.0.0.0', 0))
+    server_socket.listen(5)
+
+    port = server_socket.getsockname()[1]
+    print(f"Server listening on port {port}")
+    sys.stdout.flush()
+
+    while True:
+        client_socket, addr = server_socket.accept()
+        print(f"Accepted connection from {addr}")
+        handle_client(client_socket)
+
+if __name__ == "__main__":
+    start_server()
